@@ -89,7 +89,15 @@ const calendarDate = z
     return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(value);
   }, "Tanggal penyewaan tidak valid");
 
-const documentMap = z.record(
+/**
+ * `partialRecord`, not `record`.
+ *
+ * In Zod 4 a `record()` keyed by an enum is **exhaustive** — it demands every
+ * member. Two of the seven document slots are optional, so `record()` rejected
+ * every real submission with "expected string, received undefined" for the
+ * slots the renter legitimately skipped.
+ */
+const documentMap = z.partialRecord(
   z.enum(DOCUMENT_SLOT_KEYS as unknown as [string, ...string[]]),
   z.string().trim().min(1).max(300),
 );
@@ -126,8 +134,15 @@ export const submitApplicationSchema = z
     documentKeys: documentMap,
     documentNames: documentMap.optional(),
 
-    /** Anti-spam honeypot: hidden from people, irresistible to bots. */
-    website: z.string().max(0).optional(),
+    /**
+     * Anti-spam honeypot: hidden from people, irresistible to bots.
+     *
+     * Deliberately permissive. Rejecting a filled value here would answer the
+     * bot with a 422 naming the field, which is exactly the feedback it needs
+     * to learn to skip it. The route accepts the request and quietly drops it
+     * instead — see `routes/applications.ts`.
+     */
+    website: z.string().max(200).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.vehicleChoice === OTHER_OPTION && !value.vehicleOther) {
