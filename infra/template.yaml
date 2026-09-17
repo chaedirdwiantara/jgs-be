@@ -1,0 +1,377 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  API for Jayanagiri EV Rental (jgs-ev.com) — rental applications, fleet
+  catalogue, console accounts and notifications. Serverless on purpose: the
+  workload is a handful of form submissions a day, so paying for an idle
+  container or an idle database would dwarf the cost of running it.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: jgs
+    Description: Prefix for every resource name in this stack.
+
+  CorsOrigins:
+    Type: String
+    Default: https://jgs-ev.com,https://www.jgs-ev.com,https://jgs-ev.pages.dev
+    Description: >
+      Comma-separated exact origins allowed to call the API. No wildcards —
+      the console sends a bearer token, so any allowed origin can act as the
+      signed-in operator.
+
+  ConsoleBaseUrl:
+    Type: String
+    Default: https://jgs-ev.com
+    Description: Origin of the static site, used for links in notifications.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: >
+      Application logs reference rental applications by id. 30 days is enough
+      to debug a submission while keeping the trail short.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    # Graviton: same performance per vCPU at ~20% lower cost.
+    Architectures: [arm64]
+    # scrypt (N=16384) needs ~32 MB on its own; 512 MB also buys proportionally
+    # more CPU, which is what actually makes a cold start tolerable.
+    MemorySize: 512
+    Timeout: 25
+    Tracing: Active
+
+Resources:
+  # ── Data ───────────────────────────────────────────────────────────────────
+  #
+  # Every table is PAY_PER_REQUEST. Provisioned capacity would mean guessing a
+  # throughput for traffic that is mostly zero, and paying for the guess.
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "${NamePrefix}-users"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        # Login looks accounts up by email; it must not scan.
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  ApplicationsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "${NamePrefix}-applications"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: listPk
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: submittedAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        # The whole inbox, newest first. `listPk` is a constant — see the note
+        # in infrastructure/dynamodb/application-repository.ts for why that is
+        # the right call at this volume and what to do if it stops being.
+        - IndexName: inbox-index
+          KeySchema:
+            - AttributeName: listPk
+              KeyType: HASH
+            - AttributeName: submittedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: submittedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  VehiclesTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "${NamePrefix}-vehicles"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "${NamePrefix}-notifications"
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: unreadSk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # Sparse: `unreadSk` is removed when an item is read, so this index holds
+        # only unread notifications and the bell's badge is a COUNT over exactly
+        # the rows it is counting.
+        - IndexName: unread-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: unreadSk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+
+  RateLimitsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${NamePrefix}-rate-limits"
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      # Counters are disposable; TTL sweeps them with no cost to us.
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  # ── Documents ──────────────────────────────────────────────────────────────
+
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "${NamePrefix}-documents-${AWS::AccountId}"
+      # Holds KTP, KK, SIM and selfies. Nothing about it may be public, ever.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      # Versioning is deliberately left off: a deleted identity document must
+      # actually be gone, not recoverable from a noncurrent version.
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-staged-uploads
+            Status: Enabled
+            Prefix: uploads/
+            # A form abandoned halfway leaves photos here. Two days is long
+            # enough for a slow submission, short enough not to hoard them.
+            ExpirationInDays: 2
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [POST]
+            AllowedOrigins: !Split [",", !Ref CorsOrigins]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag]
+            MaxAge: 3000
+
+  DocumentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DocumentsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Presigned URLs are ordinary HTTPS requests; this makes a plaintext
+          # one impossible rather than merely discouraged.
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt DocumentsBucket.Arn
+              - !Sub "${DocumentsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # ── Compute ────────────────────────────────────────────────────────────────
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${NamePrefix}-api"
+      CodeUri: ../dist/
+      Handler: index.handler
+      Description: HTTP API for the JGS rental console and public form.
+      Environment:
+        Variables:
+          NODE_ENV: production
+          LOG_LEVEL: info
+          # The bundle is minified, so without this a CloudWatch stack trace
+          # points at column 41000 of one line and tells you nothing.
+          NODE_OPTIONS: --enable-source-maps
+          TABLE_USERS: !Ref UsersTable
+          TABLE_APPLICATIONS: !Ref ApplicationsTable
+          TABLE_VEHICLES: !Ref VehiclesTable
+          TABLE_NOTIFICATIONS: !Ref NotificationsTable
+          TABLE_RATE_LIMITS: !Ref RateLimitsTable
+          DOCUMENTS_BUCKET: !Ref DocumentsBucket
+          CORS_ORIGINS: !Ref CorsOrigins
+          CONSOLE_BASE_URL: !Ref ConsoleBaseUrl
+          ACCESS_TOKEN_TTL_HOURS: "8"
+          # Secrets are read from SSM at cold start, not injected here: the
+          # operator creates the Telegram bot after this stack exists, and
+          # rotating a parameter must not require a redeploy.
+          JWT_SECRET_PARAM: !Sub "/${NamePrefix}/prod/jwt-secret"
+          TELEGRAM_BOT_TOKEN_PARAM: !Sub "/${NamePrefix}/prod/telegram-bot-token"
+          TELEGRAM_CHAT_ID_PARAM: !Sub "/${NamePrefix}/prod/telegram-chat-id"
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:BatchWriteItem
+                - dynamodb:TransactWriteItems
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !Sub "${UsersTable.Arn}/index/*"
+                - !GetAtt ApplicationsTable.Arn
+                - !Sub "${ApplicationsTable.Arn}/index/*"
+                - !GetAtt VehiclesTable.Arn
+                - !GetAtt NotificationsTable.Arn
+                - !Sub "${NotificationsTable.Arn}/index/*"
+                - !GetAtt RateLimitsTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub "${DocumentsBucket.Arn}/*"
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${NamePrefix}/prod/*"
+            - Effect: Allow
+              # Decrypting SecureString parameters, and only those: the
+              # condition pins this to requests made on SSM's behalf.
+              Action: kms:Decrypt
+              Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+      Events:
+        # One catch-all route: Hono owns the routing table, so duplicating it in
+        # API Gateway would be two places to keep in step.
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: $default
+            Method: ANY
+
+  ApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NamePrefix}-api"
+      RetentionInDays: !Ref LogRetentionDays
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      # CORS is handled inside the app so the allow-list lives in one place;
+      # configuring it here too would silently win and drop the app's rules.
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
+      AccessLogSettings:
+        DestinationArn: !GetAtt HttpApiLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latency":"$context.responseLatency","integrationStatus":"$context.integrationStatus"}
+
+  HttpApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${NamePrefix}-api"
+      RetentionInDays: !Ref LogRetentionDays
+
+Outputs:
+  ApiBaseUrl:
+    Description: >
+      Set this as NEXT_PUBLIC_API_BASE_URL in the frontend and rebuild, and add
+      it to connect-src in public/_headers.
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+
+  DocumentsBucketName:
+    Value: !Ref DocumentsBucket
+
+  FunctionName:
+    Value: !Ref ApiFunction

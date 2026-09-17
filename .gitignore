@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+
+# Produced by `aws cloudformation package`; it embeds an account-specific S3
+# URL and is regenerated on every deploy.
+infra/packaged.yaml
+
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store

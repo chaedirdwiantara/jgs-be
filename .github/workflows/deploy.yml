@@ -1,0 +1,99 @@
+name: Deploy
+
+# Ships on every push to main, gated on the same checks as CI.
+on:
+  push:
+    branches: [main]
+
+# A half-applied CloudFormation update is worse than a slow one, so deploys
+# queue rather than cancel each other.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    name: Deploy stack
+    needs: verify
+    runs-on: ubuntu-latest
+
+    if: ${{ github.repository == 'chaedirdwiantara/jgs-be' }}
+
+    permissions:
+      id-token: write # required to request the OIDC token for AWS
+      contents: read
+
+    env:
+      AWS_REGION: ap-southeast-1
+      STACK_NAME: jgs-be
+
+    steps:
+      # `secrets` is not available in a job-level `if`, so the guard lives here.
+      # Until the OIDC role exists the deploy is skipped rather than failed —
+      # a red tick on every push would train everyone to ignore this workflow.
+      - name: Check whether deploys are configured
+        id: guard
+        env:
+          ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS_ROLE_ARN is not set — skipping deploy. See docs/RUNBOOK.md §7."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.guard.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.guard.outputs.enabled == 'true'
+        run: npm ci
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.guard.outputs.enabled == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Same script the runbook tells a human to run, so CI and a workstation
+      # deploy cannot drift apart.
+      - name: Build, package and deploy
+        if: steps.guard.outputs.enabled == 'true'
+        run: ./scripts/deploy.sh "$STACK_NAME"
+
+      - name: Smoke-test the deployed API
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          BASE_URL=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue | [0]" \
+            --output text)
+          echo "Health check: ${BASE_URL}/health"
+          STATUS=$(curl -fsS -o /tmp/health.json -w '%{http_code}' "${BASE_URL}/health")
+          cat /tmp/health.json
+          [ "$STATUS" = "200" ] || { echo "::error::Health check returned $STATUS"; exit 1; }
