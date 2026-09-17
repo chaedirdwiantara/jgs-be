@@ -91,6 +91,12 @@ export type RentalDetails = {
    * pick "lainnya" the free-text goes in `vehicleOther`.
    */
   vehicleChoice: string;
+  /**
+   * The unit's name exactly as the renter saw it ("IONIQ 5"), alongside the
+   * stable slug above. Stored rather than derived: the API has no label table,
+   * and an alert that reads "ioniq-5" looks unfinished to whoever it wakes up.
+   */
+  vehicleLabel: string;
   vehicleOther: string | null;
   withDriver: boolean;
   referralSource: string;
@@ -121,6 +127,7 @@ export type ApplicationSummary = Pick<
   | "fullName"
   | "whatsapp"
   | "vehicleChoice"
+  | "vehicleLabel"
   | "vehicleOther"
   | "withDriver"
   | "startDate"
@@ -136,6 +143,7 @@ export function toSummary(application: RentalApplication): ApplicationSummary {
     fullName: application.fullName,
     whatsapp: application.whatsapp,
     vehicleChoice: application.vehicleChoice,
+    vehicleLabel: application.vehicleLabel,
     vehicleOther: application.vehicleOther,
     withDriver: application.withDriver,
     startDate: application.startDate,
@@ -147,11 +155,12 @@ export function toSummary(application: RentalApplication): ApplicationSummary {
 
 /** What the renter actually gets: the free text when they chose "lainnya". */
 export function resolvedVehicle(
-  application: Pick<RentalApplication, "vehicleChoice" | "vehicleOther">,
+  application: Pick<RentalApplication, "vehicleChoice" | "vehicleLabel" | "vehicleOther">,
 ): string {
-  return application.vehicleChoice === "lainnya" && application.vehicleOther
-    ? application.vehicleOther
-    : application.vehicleChoice;
+  if (application.vehicleChoice === "lainnya" && application.vehicleOther) {
+    return application.vehicleOther;
+  }
+  return application.vehicleLabel || application.vehicleChoice;
 }
 
 const REFERENCE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // no 0/O/1/I — read aloud over the phone

@@ -94,6 +94,7 @@ export function makeSubmitApplication(deps: {
       startTime: command.startTime,
       durationDays: command.durationDays,
       vehicleChoice: command.vehicleChoice,
+      vehicleLabel: command.vehicleLabel,
       vehicleOther: command.vehicleOther,
       withDriver: command.withDriver,
       referralSource: command.referralSource,

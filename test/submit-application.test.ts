@@ -39,6 +39,7 @@ function baseCommand(
     startTime: "09:00",
     durationDays: 3,
     vehicleChoice: "byd-seal",
+    vehicleLabel: "BYD Seal",
     vehicleOther: null,
     withDriver: false,
     referralSource: "ig",

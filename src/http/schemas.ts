@@ -125,6 +125,7 @@ export const submitApplicationSchema = z
       .max(90, "Durasi penyewaan maksimal 90 hari"),
 
     vehicleChoice: text("Jenis mobil", 1, 60),
+    vehicleLabel: text("Nama unit", 1, 80),
     vehicleOther: z.string().trim().max(80, "Maksimal 80 karakter").nullish(),
     withDriver: z.boolean({ error: "Pilih dengan atau tanpa driver" }),
 

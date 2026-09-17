@@ -58,6 +58,7 @@ applicationRoutes.post("/applications", async (context) => {
     startTime: body.startTime,
     durationDays: body.durationDays,
     vehicleChoice: body.vehicleChoice,
+    vehicleLabel: body.vehicleLabel,
     vehicleOther: body.vehicleOther ?? null,
     withDriver: body.withDriver,
     referralSource: body.referralSource,
