@@ -33,6 +33,8 @@ function baseCommand(
     whatsapp: "628118030900",
     gsmNumber: "628118030901",
     emergencyNumber: "628118030902",
+    socialPlatform: "instagram",
+    socialAccount: "budi.santoso",
     purpose: "Perjalanan keluarga",
     usageLocation: "Jakarta - Bandung",
     startDate: "2026-09-20",
@@ -49,7 +51,6 @@ function baseCommand(
       selfieKtp: "uploads/a2/selfieKtp.jpg",
       sim: "uploads/a3/sim.jpg",
       kartuKeluarga: "uploads/a4/kartuKeluarga.jpg",
-      sosialMedia: "uploads/a5/sosialMedia.jpg",
     },
     documentNames: { ktp: "ktp-budi.jpg" },
     clientIp: "1.1.1.1",
@@ -127,7 +128,7 @@ describe("submitApplication", () => {
 
     await submit(baseCommand());
 
-    expect(promoted).toHaveLength(5);
+    expect(promoted).toHaveLength(4);
     for (const [staging, final] of promoted) {
       expect(staging.startsWith("uploads/")).toBe(true);
       expect(final.startsWith("applications/")).toBe(true);

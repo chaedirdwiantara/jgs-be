@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { normalisePhone, submitApplicationSchema } from "../src/http/schemas.js";
 
-/** A submission with only the five required documents attached. */
+/** A submission with only the four required documents attached. */
 function validPayload(overrides: Record<string, unknown> = {}) {
   return {
     email: "budi@example.com",
@@ -11,6 +11,8 @@ function validPayload(overrides: Record<string, unknown> = {}) {
     whatsapp: "0811803090",
     gsmNumber: "081380001111",
     emergencyNumber: "081290002222",
+    socialPlatform: "instagram",
+    socialAccount: "budi.santoso",
     purpose: "Perjalanan keluarga",
     usageLocation: "Jakarta - Bandung",
     startDate: "2026-09-25",
@@ -27,7 +29,6 @@ function validPayload(overrides: Record<string, unknown> = {}) {
       selfieKtp: "uploads/a2/selfieKtp.jpg",
       sim: "uploads/a3/sim.jpg",
       kartuKeluarga: "uploads/a4/kartuKeluarga.jpg",
-      sosialMedia: "uploads/a5/sosialMedia.jpg",
     },
     documentNames: { ktp: "ktp.jpg" },
     ...overrides,
@@ -46,19 +47,34 @@ describe("submitApplicationSchema", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.documentKeys.tokenListrik).toBeUndefined();
-      expect(Object.keys(result.data.documentKeys)).toHaveLength(5);
+      expect(Object.keys(result.data.documentKeys)).toHaveLength(4);
     }
   });
 
-  it("accepts all seven documents", () => {
+  it("accepts all six documents", () => {
     const payload = validPayload();
     const result = submitApplicationSchema.safeParse({
       ...payload,
       documentKeys: {
         ...payload.documentKeys,
-        tokenListrik: "uploads/a6/tokenListrik.jpg",
-        riwayatAkun: "uploads/a7/riwayatAkun.jpg",
+        tokenListrik: "uploads/a5/tokenListrik.jpg",
+        riwayatAkun: "uploads/a6/riwayatAkun.jpg",
       },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("still accepts the retired sosialMedia key from an older build", () => {
+    /*
+     * The static site is cached at the edge, so a browser can submit against
+     * the previous bundle for a while after a deploy. Rejecting the key it
+     * uploads would fail those submissions outright.
+     */
+    const payload = validPayload();
+    const result = submitApplicationSchema.safeParse({
+      ...payload,
+      documentKeys: { ...payload.documentKeys, sosialMedia: "uploads/a7/sosialMedia.jpg" },
     });
 
     expect(result.success).toBe(true);
@@ -103,6 +119,32 @@ describe("submitApplicationSchema", () => {
   it("rejects a malformed phone number", () => {
     const result = submitApplicationSchema.safeParse(validPayload({ whatsapp: "12" }));
     expect(result.success).toBe(false);
+  });
+
+  it("accepts a pasted profile link as the social account", () => {
+    const result = submitApplicationSchema.safeParse(
+      validPayload({ socialAccount: "https://www.tiktok.com/@budisantoso", socialPlatform: "tiktok" }),
+    );
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a social platform outside the list", () => {
+    const result = submitApplicationSchema.safeParse(validPayload({ socialPlatform: "myspace" }));
+    expect(result.success).toBe(false);
+  });
+
+  it.each([
+    ["kosong", ""],
+    ["berisi spasi", "budi santoso"],
+    ["skema berbahaya", "javascript:alert(1)"],
+  ])("rejects a social account yang %s", (_label, socialAccount) => {
+    const result = submitApplicationSchema.safeParse(validPayload({ socialAccount }));
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join("."))).toContain("socialAccount");
+    }
   });
 });
 

@@ -19,7 +19,7 @@ export const STATUS_LABELS: Record<ApplicationStatus, string> = {
 };
 
 /**
- * The seven photo slots on the intake form, in the order they are asked for.
+ * The six photo slots on the intake form, in the order they are asked for.
  *
  * `camera` drives the capture hint the browser gets on a phone: the selfie uses
  * the front lens, every other slot the rear one.
@@ -29,12 +29,6 @@ export const DOCUMENT_SLOTS = [
   { key: "selfieKtp", label: "Foto Selfie dengan KTP", required: true, camera: "user" },
   { key: "sim", label: "Foto SIM", required: true, camera: "environment" },
   { key: "kartuKeluarga", label: "Foto Kartu Keluarga", required: true, camera: "environment" },
-  {
-    key: "sosialMedia",
-    label: "Akun Sosial Media IG/TikTok",
-    required: true,
-    camera: "environment",
-  },
   {
     key: "tokenListrik",
     label: "Foto Nomor Token Rumah",
@@ -49,13 +43,41 @@ export const DOCUMENT_SLOTS = [
   },
 ] as const;
 
-export type DocumentSlot = (typeof DOCUMENT_SLOTS)[number]["key"];
+/**
+ * Slots the form no longer collects, but whose files still exist.
+ *
+ * `sosialMedia` was a screenshot of the renter's profile; it is now the
+ * `socialPlatform` + `socialAccount` pair below, which the console can open as
+ * a link. The key stays accepted here for two reasons: applications submitted
+ * before the change still carry the file and must keep rendering, and a browser
+ * left on the previous build must not have its submission rejected outright.
+ */
+export const LEGACY_DOCUMENT_SLOTS = [
+  { key: "sosialMedia", label: "Akun Sosial Media IG/TikTok (unggahan lama)" },
+] as const;
 
-export const DOCUMENT_SLOT_KEYS = DOCUMENT_SLOTS.map((slot) => slot.key) as readonly DocumentSlot[];
+export type DocumentSlot =
+  | (typeof DOCUMENT_SLOTS)[number]["key"]
+  | (typeof LEGACY_DOCUMENT_SLOTS)[number]["key"];
+
+/** Every key accepted on input, current and retired. */
+export const DOCUMENT_SLOT_KEYS = [
+  ...DOCUMENT_SLOTS.map((slot) => slot.key),
+  ...LEGACY_DOCUMENT_SLOTS.map((slot) => slot.key),
+] as readonly DocumentSlot[];
 
 export const REQUIRED_DOCUMENT_SLOTS = DOCUMENT_SLOTS.filter((slot) => slot.required).map(
   (slot) => slot.key,
 ) as readonly DocumentSlot[];
+
+/**
+ * Where the renter's social account lives. `lainnya` is the escape hatch for
+ * anything else, and is the one value the console cannot turn into a link from
+ * a username alone.
+ */
+export const SOCIAL_PLATFORMS = ["instagram", "tiktok", "facebook", "lainnya"] as const;
+
+export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number];
 
 /** Where a submitted photo ended up, plus what it was when it arrived. */
 export type StoredDocument = {
@@ -76,6 +98,17 @@ export type ApplicantDetails = {
   gsmNumber: string;
   /** Spouse or sibling, per the operator's form. */
   emergencyNumber: string;
+  /**
+   * The renter's social account, which the operator opens to verify they are a
+   * real person. Stored as a pair — `instagram` + `budi.santoso` — rather than
+   * one URL, because the form accepts a bare username and only the platform
+   * says which profile root it hangs off.
+   *
+   * `socialPlatform` is `instagram` | `tiktok` | `facebook` | `lainnya`; under
+   * `lainnya` the account is expected to be a full address.
+   */
+  socialPlatform: SocialPlatform;
+  socialAccount: string;
 };
 
 export type RentalDetails = {
