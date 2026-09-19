@@ -52,6 +52,8 @@ applicationRoutes.post("/applications", async (context) => {
     whatsapp: body.whatsapp,
     gsmNumber: body.gsmNumber,
     emergencyNumber: body.emergencyNumber,
+    socialPlatform: body.socialPlatform,
+    socialAccount: body.socialAccount,
     purpose: body.purpose,
     usageLocation: body.usageLocation,
     startDate: body.startDate,

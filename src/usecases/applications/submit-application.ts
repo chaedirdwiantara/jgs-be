@@ -87,6 +87,8 @@ export function makeSubmitApplication(deps: {
       whatsapp: command.whatsapp,
       gsmNumber: command.gsmNumber,
       emergencyNumber: command.emergencyNumber,
+      socialPlatform: command.socialPlatform,
+      socialAccount: command.socialAccount,
 
       purpose: command.purpose,
       usageLocation: command.usageLocation,

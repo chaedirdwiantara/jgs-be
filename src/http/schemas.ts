@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { DOCUMENT_SLOT_KEYS } from "../domain/application/rental-application.js";
+import {
+  DOCUMENT_SLOT_KEYS,
+  SOCIAL_PLATFORMS,
+} from "../domain/application/rental-application.js";
 import { APPLICATION_STATUSES } from "../domain/application/rental-application.js";
 import { USER_ROLES } from "../domain/user/user.js";
 import { VEHICLE_TIERS } from "../domain/vehicle/vehicle.js";
@@ -93,7 +96,7 @@ const calendarDate = z
  * `partialRecord`, not `record`.
  *
  * In Zod 4 a `record()` keyed by an enum is **exhaustive** — it demands every
- * member. Two of the seven document slots are optional, so `record()` rejected
+ * member. Two of the six document slots are optional, so `record()` rejected
  * every real submission with "expected string, received undefined" for the
  * slots the renter legitimately skipped.
  */
@@ -110,6 +113,18 @@ export const submitApplicationSchema = z
     whatsapp: phone("Nomor WhatsApp"),
     gsmNumber: phone("Nomor GSM"),
     emergencyNumber: phone("Nomor darurat"),
+    socialPlatform: z.enum(SOCIAL_PLATFORMS, { error: "Pilih platform media sosial" }),
+    socialAccount: text("Akun media sosial", 2, 200)
+      .refine((value) => !/\s/.test(value), "Tulis tautan profil atau username saja, tanpa spasi")
+      /*
+       * A username has no scheme and is stored as-is; anything that does carry
+       * one is an address, and only the two the console may put in an `href`
+       * are allowed through. This is what keeps `javascript:` out of the store.
+       */
+      .refine(
+        (value) => !/^[a-z][a-z0-9+.-]*:/i.test(value) || /^https?:\/\//i.test(value),
+        "Tautan harus diawali http:// atau https://",
+      ),
 
     purpose: text("Tujuan menyewa mobil", 2, 300),
     usageLocation: text("Lokasi penggunaan mobil", 2, 300),
