@@ -34,6 +34,8 @@ export function createApp() {
       origin: (origin) => (corsOrigins.includes(origin) ? origin : null),
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowHeaders: ["Content-Type", "Authorization"],
+      // Not a CORS-safelisted header; without this the form cannot read it.
+      exposeHeaders: ["Retry-After"],
       maxAge: 86_400,
     }),
   );

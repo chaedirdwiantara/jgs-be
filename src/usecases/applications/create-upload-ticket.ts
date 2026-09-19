@@ -43,12 +43,12 @@ export function makeCreateUploadTicket(deps: {
   return async function createUploadTicket(
     command: CreateUploadTicketCommand,
   ): Promise<UploadTicket & { maxBytes: number }> {
-    const { allowed } = await deps.rateLimiter.hit(
+    const budget = await deps.rateLimiter.hit(
       `upload:ip:${command.clientIp}`,
       MAX_TICKETS_PER_IP,
       TICKET_WINDOW_SECONDS,
     );
-    if (!allowed) throw RateLimitedError();
+    if (!budget.allowed) throw RateLimitedError(budget.retryAfterSeconds);
 
     if (!isDocumentSlot(command.slot)) {
       throw ValidationError("Jenis dokumen tidak dikenal.", { slot: "Jenis dokumen tidak dikenal." });

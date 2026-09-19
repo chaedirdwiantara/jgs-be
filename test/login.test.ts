@@ -48,7 +48,10 @@ function makeRateLimiter(overrides: Record<string, number> = {}): RateLimiter {
     hit: async (key, limit) => {
       const next = (hits.get(key) ?? 0) + 1;
       hits.set(key, next);
-      return { allowed: next <= limit };
+      return { allowed: next <= limit, retryAfterSeconds: 900 };
+    },
+    refund: async (key) => {
+      hits.set(key, Math.max(0, (hits.get(key) ?? 0) - 1));
     },
   };
 }
