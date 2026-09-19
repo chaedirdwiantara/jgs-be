@@ -34,10 +34,29 @@ const STATUS_BY_CODE: Record<DomainErrorCode, ContentfulStatusCode> = {
  */
 export function errorResponse(context: Context, cause: unknown) {
   if (cause instanceof DomainError) {
-    return context.json(
-      { message: cause.message, errors: cause.fieldErrors },
-      STATUS_BY_CODE[cause.code],
-    );
+    const status = STATUS_BY_CODE[cause.code];
+
+    /*
+     * Rejections are logged too — codes and field *names*, never values. A
+     * form the API keeps refusing is invisible otherwise: the renter sees a
+     * message, CloudWatch sees a 4xx with no reason, and nobody can tell which
+     * field the two ends disagree on.
+     */
+    logger.info("request_rejected", {
+      requestId: context.get("requestId"),
+      path: context.req.path,
+      method: context.req.method,
+      code: cause.code,
+      status,
+      fields: cause.fieldErrors ? Object.keys(cause.fieldErrors) : undefined,
+      retryAfterSeconds: cause.retryAfterSeconds,
+    });
+
+    if (cause.retryAfterSeconds !== undefined) {
+      context.header("Retry-After", String(cause.retryAfterSeconds));
+    }
+
+    return context.json({ message: cause.message, errors: cause.fieldErrors }, status);
   }
 
   /*

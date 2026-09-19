@@ -30,10 +30,15 @@ export type SubmitApplicationCommand = ApplicantDetails &
   };
 
 /**
- * Deliberately low. A genuine renter fills this in once, maybe twice if they
- * mistyped something — anything beyond that is a script.
+ * Counts *accepted* submissions only; see `submitApplication` for why.
+ *
+ * Sized for a shared address, not a person. Indonesian mobile operators put
+ * thousands of subscribers behind one public IP (carrier-grade NAT), so two
+ * unrelated renters on the same network in the same hour is ordinary — while
+ * ten stored applications from one address is still far beyond anything but a
+ * script.
  */
-const MAX_SUBMISSIONS_PER_IP = 5;
+const MAX_SUBMISSIONS_PER_IP = 10;
 const SUBMISSION_WINDOW_SECONDS = 60 * 60;
 
 export function makeSubmitApplication(deps: {
@@ -51,59 +56,42 @@ export function makeSubmitApplication(deps: {
   return async function submitApplication(
     command: SubmitApplicationCommand,
   ): Promise<{ id: string; referenceCode: string }> {
-    const { allowed } = await deps.rateLimiter.hit(
-      `apply:ip:${command.clientIp}`,
+    /*
+     * Validation comes before the budget is charged, and the charge is handed
+     * back if the attempt still fails before a record exists. Only a stored
+     * application spends budget: the limit is there to cap how many
+     * submissions one address can land in the console, not how many times a
+     * renter may get a form wrong. Counting failures locked a real renter out
+     * for an hour after five rejected tries — the very case this must absorb.
+     */
+    assertRequiredDocuments(command.documentKeys);
+
+    const budgetKey = `apply:ip:${command.clientIp}`;
+    const budget = await deps.rateLimiter.hit(
+      budgetKey,
       MAX_SUBMISSIONS_PER_IP,
       SUBMISSION_WINDOW_SECONDS,
     );
-    if (!allowed) throw RateLimitedError();
-
-    assertRequiredDocuments(command.documentKeys);
+    if (!budget.allowed) throw RateLimitedError(budget.retryAfterSeconds);
 
     const now = deps.clock.now();
     const id = deps.ids.generate();
 
-    /*
-     * Files move to their permanent home *before* the record is written. The
-     * other order can leave an application pointing at keys that expired out of
-     * the staging prefix, which reads as data loss to whoever opens it.
-     */
-    const documents = await promoteDocuments(deps.storage, id, command);
+    let application: RentalApplication;
+    try {
+      /*
+       * Files move to their permanent home *before* the record is written. The
+       * other order can leave an application pointing at keys that expired out
+       * of the staging prefix, which reads as data loss to whoever opens it.
+       */
+      const documents = await promoteDocuments(deps.storage, id, command);
 
-    const application: RentalApplication = {
-      id,
-      referenceCode: buildReferenceCode(now, Math.random),
-      status: "baru",
-      internalNote: "",
-      documents,
-      submittedAt: now,
-      updatedAt: now,
-      reviewedAt: null,
-      reviewedBy: null,
-
-      email: command.email,
-      fullName: command.fullName,
-      address: command.address,
-      whatsapp: command.whatsapp,
-      gsmNumber: command.gsmNumber,
-      emergencyNumber: command.emergencyNumber,
-      socialPlatform: command.socialPlatform,
-      socialAccount: command.socialAccount,
-
-      purpose: command.purpose,
-      usageLocation: command.usageLocation,
-      startDate: command.startDate,
-      startTime: command.startTime,
-      durationDays: command.durationDays,
-      vehicleChoice: command.vehicleChoice,
-      vehicleLabel: command.vehicleLabel,
-      vehicleOther: command.vehicleOther,
-      withDriver: command.withDriver,
-      referralSource: command.referralSource,
-      referralSourceOther: command.referralSourceOther,
-    };
-
-    await deps.applications.create(application);
+      application = buildApplication(id, now, documents, command);
+      await deps.applications.create(application);
+    } catch (cause) {
+      await deps.rateLimiter.refund(budgetKey, SUBMISSION_WINDOW_SECONDS);
+      throw cause;
+    }
 
     /*
      * Notifications are a side effect of a submission that already succeeded.
@@ -116,6 +104,46 @@ export function makeSubmitApplication(deps: {
     ]);
 
     return { id: application.id, referenceCode: application.referenceCode };
+  };
+}
+
+function buildApplication(
+  id: string,
+  now: string,
+  documents: Partial<Record<DocumentSlot, StoredDocument>>,
+  command: SubmitApplicationCommand,
+): RentalApplication {
+  return {
+    id,
+    referenceCode: buildReferenceCode(now, Math.random),
+    status: "baru",
+    internalNote: "",
+    documents,
+    submittedAt: now,
+    updatedAt: now,
+    reviewedAt: null,
+    reviewedBy: null,
+
+    email: command.email,
+    fullName: command.fullName,
+    address: command.address,
+    whatsapp: command.whatsapp,
+    gsmNumber: command.gsmNumber,
+    emergencyNumber: command.emergencyNumber,
+    socialPlatform: command.socialPlatform,
+    socialAccount: command.socialAccount,
+
+    purpose: command.purpose,
+    usageLocation: command.usageLocation,
+    startDate: command.startDate,
+    startTime: command.startTime,
+    durationDays: command.durationDays,
+    vehicleChoice: command.vehicleChoice,
+    vehicleLabel: command.vehicleLabel,
+    vehicleOther: command.vehicleOther,
+    withDriver: command.withDriver,
+    referralSource: command.referralSource,
+    referralSourceOther: command.referralSourceOther,
   };
 }
 

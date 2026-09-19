@@ -13,12 +13,25 @@ export interface IdGenerator {
   generate(): string;
 }
 
+export type RateLimitDecision = {
+  allowed: boolean;
+  /**
+   * Seconds until the current window closes. When `allowed` is false this is
+   * how long the caller has to wait; it is what the `Retry-After` header and
+   * the message shown to the renter are built from.
+   */
+  retryAfterSeconds: number;
+};
+
 /**
  * Fixed-window counter shared by every public endpoint.
  *
  * `hit` records one attempt and reports whether the caller is now over budget,
- * so callers never need a separate read.
+ * so callers never need a separate read. `refund` hands one attempt back — for
+ * a request that was turned away before it did whatever the limit exists to
+ * cap, so that a renter's own failed tries cannot lock them out.
  */
 export interface RateLimiter {
-  hit(key: string, limit: number, windowSeconds: number): Promise<{ allowed: boolean }>;
+  hit(key: string, limit: number, windowSeconds: number): Promise<RateLimitDecision>;
+  refund(key: string, windowSeconds: number): Promise<void>;
 }

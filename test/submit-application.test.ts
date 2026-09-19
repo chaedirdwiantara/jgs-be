@@ -6,6 +6,7 @@ import { buildReferenceCode } from "../src/domain/application/rental-application
 import type { ChatNotifier } from "../src/domain/notification/chat-notifier.js";
 import type { Notification } from "../src/domain/notification/notification.js";
 import type { NotificationRepository } from "../src/domain/notification/notification-repository.js";
+import { describeWait, ValidationError } from "../src/domain/shared/errors.js";
 import type { Clock, IdGenerator, RateLimiter } from "../src/domain/shared/ports.js";
 import type { DocumentStorage } from "../src/domain/storage/document-storage.js";
 import type { UserRepository } from "../src/domain/user/user-repository.js";
@@ -21,7 +22,26 @@ function makeIds(): IdGenerator {
   return { generate: () => `id-${(counter += 1)}` };
 }
 
-const allowAll: RateLimiter = { hit: async () => ({ allowed: true }) };
+const allowAll: RateLimiter = {
+  hit: async () => ({ allowed: true, retryAfterSeconds: 0 }),
+  refund: async () => {},
+};
+
+/** Counts hits per key so budget accounting can be asserted, not just outcomes. */
+function makeRateLimiter(limit: number) {
+  const hits = new Map<string, number>();
+  const limiter: RateLimiter = {
+    hit: vi.fn(async (key: string) => {
+      const next = (hits.get(key) ?? 0) + 1;
+      hits.set(key, next);
+      return { allowed: next <= limit, retryAfterSeconds: 1_500 };
+    }),
+    refund: vi.fn(async (key: string) => {
+      hits.set(key, Math.max(0, (hits.get(key) ?? 0) - 1));
+    }),
+  };
+  return { limiter, hits };
+}
 
 function baseCommand(
   overrides: Partial<SubmitApplicationCommand> = {},
@@ -183,13 +203,65 @@ describe("submitApplication", () => {
     expect(created).toHaveLength(1);
   });
 
-  it("rejects once the per-IP budget is spent", async () => {
-    const { submit, created } = build({
-      rateLimiter: { hit: async () => ({ allowed: false }) },
-    });
+  it("rejects once the per-IP budget is spent, and says how long to wait", async () => {
+    const { limiter } = makeRateLimiter(0);
+    const { submit, created } = build({ rateLimiter: limiter });
 
-    await expect(submit(baseCommand())).rejects.toMatchObject({ code: "rate_limited" });
+    await expect(submit(baseCommand())).rejects.toMatchObject({
+      code: "rate_limited",
+      retryAfterSeconds: 1_500,
+      message: "Terlalu banyak percobaan. Coba lagi dalam 25 menit.",
+    });
     expect(created).toHaveLength(0);
+  });
+
+  it("does not spend budget on a submission that fails validation", async () => {
+    // A renter who is missing a document may fix it and try again as often as
+    // it takes; only accepted submissions count against the address.
+    const { limiter, hits } = makeRateLimiter(1);
+    const { submit } = build({ rateLimiter: limiter });
+
+    await expect(
+      submit(baseCommand({ documentKeys: { ktp: "uploads/a1/ktp.jpg" } })),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    expect(limiter.hit).not.toHaveBeenCalled();
+    expect(hits.get("apply:ip:1.1.1.1") ?? 0).toBe(0);
+  });
+
+  it("hands the budget back when an upload can no longer be found", async () => {
+    const { limiter, hits } = makeRateLimiter(1);
+    const { submit, storage, created } = build({ rateLimiter: limiter });
+    vi.mocked(storage.promote).mockRejectedValueOnce(
+      ValidationError("Berkas yang diunggah sudah kedaluwarsa. Unggah ulang dokumen Anda."),
+    );
+
+    await expect(submit(baseCommand())).rejects.toMatchObject({ code: "validation" });
+    expect(created).toHaveLength(0);
+    expect(limiter.refund).toHaveBeenCalledWith("apply:ip:1.1.1.1", 3_600);
+    expect(hits.get("apply:ip:1.1.1.1")).toBe(0);
+
+    // The retry, with the document re-uploaded, still fits in a budget of one.
+    await expect(submit(baseCommand())).resolves.toMatchObject({ id: "id-2" });
+  });
+
+  it("keeps the charge for a stored submission", async () => {
+    const { limiter, hits } = makeRateLimiter(1);
+    const { submit } = build({ rateLimiter: limiter });
+
+    await submit(baseCommand());
+
+    expect(limiter.refund).not.toHaveBeenCalled();
+    expect(hits.get("apply:ip:1.1.1.1")).toBe(1);
+  });
+});
+
+describe("describeWait", () => {
+  it("rounds up to whole minutes and never says zero", () => {
+    expect(describeWait(0)).toBe("1 menit");
+    expect(describeWait(59)).toBe("1 menit");
+    expect(describeWait(61)).toBe("2 menit");
+    expect(describeWait(3_600)).toBe("60 menit");
   });
 });
 

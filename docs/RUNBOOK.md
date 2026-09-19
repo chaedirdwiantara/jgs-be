@@ -101,8 +101,16 @@ aws logs tail /aws/lambda/jgs-api --since 1h --follow --region ap-southeast-1
 ```
 
 Logs are structured JSON. Useful events: `application_submitted`,
-`application_honeypot_tripped`, `telegram_send_failed`, `unhandled_error`,
-`rate_limiter_unavailable`. Applicant field values are never logged — only ids.
+`application_honeypot_tripped`, `request_rejected` (every 4xx the API returned,
+with the error code and the *names* of the offending fields), `telegram_send_failed`,
+`unhandled_error`, `rate_limiter_unavailable`. Applicant field values are never
+logged — only ids.
+
+**"The form keeps failing."** Filter for `request_rejected` on `POST /applications`.
+A `validation` code naming a field the form no longer has means the site and the
+API are on different versions — check the Lambda's `LastModified` against the
+latest merge, and remember that the Deploy workflow **skips** (with a warning)
+while `AWS_ROLE_ARN` is unset.
 
 **Trace one 500.** The response carries a request id; that id is on the
 `unhandled_error` line.

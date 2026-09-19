@@ -48,6 +48,9 @@ jobs:
       # `secrets` is not available in a job-level `if`, so the guard lives here.
       # Until the OIDC role exists the deploy is skipped rather than failed —
       # a red tick on every push would train everyone to ignore this workflow.
+      # It is a *warning* with a summary, though, not a notice: a green run
+      # that shipped nothing was read as "the API is up to date" once, and the
+      # form broke in production against a stale Lambda.
       - name: Check whether deploys are configured
         id: guard
         env:
@@ -55,7 +58,13 @@ jobs:
         run: |
           if [ -z "$ROLE_ARN" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::AWS_ROLE_ARN is not set — skipping deploy. See docs/RUNBOOK.md §7."
+            echo "::warning title=Deploy skipped::AWS_ROLE_ARN is not set — nothing was deployed. Run ./scripts/deploy.sh from a workstation, or set the secret (docs/RUNBOOK.md §7)."
+            {
+              echo "## ⚠️ Deploy skipped — nothing reached AWS"
+              echo
+              echo "The repository secret \`AWS_ROLE_ARN\` is not set, so this run did **not** update the \`jgs-be\` stack."
+              echo "Deploy from a workstation with \`./scripts/deploy.sh\`, or configure the role (docs/RUNBOOK.md §7)."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
