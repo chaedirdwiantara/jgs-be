@@ -23,6 +23,14 @@ import {
   makeUpdateUser,
 } from "../usecases/users/manage-users.js";
 import {
+  makeCreateRental,
+  makeDeleteRental,
+  makeGetRental,
+  makeListRentals,
+  makeUpdateRental,
+} from "../usecases/rentals/manage-rentals.js";
+import { makeSendRentalReminders } from "../usecases/rentals/send-rental-reminders.js";
+import {
   makeCreateVehicle,
   makeDeleteVehicle,
   makeListVehicles,
@@ -33,6 +41,7 @@ import { ScryptPasswordHasher } from "./crypto/scrypt-password-hasher.js";
 import { DynamoApplicationRepository } from "./dynamodb/application-repository.js";
 import { DynamoNotificationRepository } from "./dynamodb/notification-repository.js";
 import { DynamoRateLimiter } from "./dynamodb/rate-limiter.js";
+import { DynamoRentalRepository } from "./dynamodb/rental-repository.js";
 import { DynamoUserRepository } from "./dynamodb/user-repository.js";
 import { DynamoVehicleRepository } from "./dynamodb/vehicle-repository.js";
 import { S3DocumentStorage } from "./s3/document-storage.js";
@@ -52,15 +61,18 @@ function build() {
   const applications = new DynamoApplicationRepository();
   const vehicles = new DynamoVehicleRepository();
   const notifications = new DynamoNotificationRepository();
+  const rentals = new DynamoRentalRepository();
   const storage = new S3DocumentStorage();
   const rateLimiter = new DynamoRateLimiter();
   const hasher = new ScryptPasswordHasher();
   const tokens = new JwtTokenIssuer();
-  const chat = new TelegramNotifier();
+  const chat = new TelegramNotifier("applications");
+  const rentalChat = new TelegramNotifier("rentals");
   const clock = systemClock;
   const ids = uuidGenerator;
 
   const shared = { users, hasher, clock, ids };
+  const rentalWrites = { rentals, chat: rentalChat, clock, ids, consoleBaseUrl: env.CONSOLE_BASE_URL };
 
   return {
     tokens,
@@ -96,6 +108,18 @@ function build() {
     createVehicle: makeCreateVehicle({ vehicles }),
     updateVehicle: makeUpdateVehicle({ vehicles }),
     deleteVehicle: makeDeleteVehicle({ vehicles }),
+
+    listRentals: makeListRentals({ rentals }),
+    getRental: makeGetRental({ rentals }),
+    createRental: makeCreateRental(rentalWrites),
+    updateRental: makeUpdateRental(rentalWrites),
+    deleteRental: makeDeleteRental({ rentals }),
+    sendRentalReminders: makeSendRentalReminders({
+      rentals,
+      chat: rentalChat,
+      clock,
+      consoleBaseUrl: env.CONSOLE_BASE_URL,
+    }),
 
     listNotifications: makeListNotifications({ notifications }),
     countUnread: makeCountUnread({ notifications }),

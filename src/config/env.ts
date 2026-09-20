@@ -13,6 +13,7 @@ const schema = z.object({
   TABLE_APPLICATIONS: z.string().min(1),
   TABLE_VEHICLES: z.string().min(1),
   TABLE_NOTIFICATIONS: z.string().min(1),
+  TABLE_RENTALS: z.string().min(1),
   TABLE_RATE_LIMITS: z.string().min(1),
 
   DOCUMENTS_BUCKET: z.string().min(1),
@@ -33,11 +34,14 @@ const schema = z.object({
   JWT_SECRET_PARAM: z.string().min(1),
   TELEGRAM_BOT_TOKEN_PARAM: z.string().min(1),
   TELEGRAM_CHAT_ID_PARAM: z.string().min(1),
+  /** A second group: rental schedule alerts go to the people who prepare cars, not the inbox triagers. */
+  TELEGRAM_RENTAL_CHAT_ID_PARAM: z.string().min(1),
 
   /** Local-only escape hatches; when set they win over SSM. */
   JWT_SECRET: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  TELEGRAM_RENTAL_CHAT_ID: z.string().optional(),
 
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error", "silent"]).default("info"),
 });

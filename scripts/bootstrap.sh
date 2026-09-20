@@ -79,6 +79,8 @@ put_parameter "/${PREFIX}/prod/telegram-bot-token" "unset" SecureString \
   "Telegram bot token from @BotFather"
 put_parameter "/${PREFIX}/prod/telegram-chat-id" "unset" String \
   "Telegram group chat id that receives new application alerts"
+put_parameter "/${PREFIX}/prod/telegram-rental-chat-id" "unset" String \
+  "Telegram group chat id that receives rental schedule and payment alerts"
 
 echo
 echo "Bootstrap complete. Next: ./scripts/deploy.sh"

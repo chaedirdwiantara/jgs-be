@@ -42,6 +42,32 @@ Globals:
     # more CPU, which is what actually makes a cold start tolerable.
     MemorySize: 512
     Timeout: 25
+    # Shared by the API and the reminder job: `src/config/env.ts` parses one
+    # schema for both, so a variable missing here fails either at first invoke.
+    Environment:
+      Variables:
+        NODE_ENV: production
+        LOG_LEVEL: info
+        # The bundle is minified, so without this a CloudWatch stack trace
+        # points at column 41000 of one line and tells you nothing.
+        NODE_OPTIONS: --enable-source-maps
+        TABLE_USERS: !Ref UsersTable
+        TABLE_APPLICATIONS: !Ref ApplicationsTable
+        TABLE_VEHICLES: !Ref VehiclesTable
+        TABLE_NOTIFICATIONS: !Ref NotificationsTable
+        TABLE_RATE_LIMITS: !Ref RateLimitsTable
+        TABLE_RENTALS: !Ref RentalsTable
+        DOCUMENTS_BUCKET: !Ref DocumentsBucket
+        CORS_ORIGINS: !Ref CorsOrigins
+        CONSOLE_BASE_URL: !Ref ConsoleBaseUrl
+        ACCESS_TOKEN_TTL_HOURS: "8"
+        # Secrets are read from SSM at cold start, not injected here: the
+        # operator creates the Telegram bot after this stack exists, and
+        # rotating a parameter must not require a redeploy.
+        JWT_SECRET_PARAM: !Sub "/${NamePrefix}/prod/jwt-secret"
+        TELEGRAM_BOT_TOKEN_PARAM: !Sub "/${NamePrefix}/prod/telegram-bot-token"
+        TELEGRAM_CHAT_ID_PARAM: !Sub "/${NamePrefix}/prod/telegram-chat-id"
+        TELEGRAM_RENTAL_CHAT_ID_PARAM: !Sub "/${NamePrefix}/prod/telegram-rental-chat-id"
     Tracing: Active
 
 Resources:
@@ -174,6 +200,62 @@ Resources:
           Projection:
             ProjectionType: KEYS_ONLY
 
+  RentalsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "${NamePrefix}-rentals"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: listPk
+          AttributeType: S
+        - AttributeName: startDate
+          AttributeType: S
+        - AttributeName: endDate
+          AttributeType: S
+        - AttributeName: paymentStatus
+          AttributeType: S
+        - AttributeName: paymentDueDate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        # The month view and the "picks up tomorrow" query.
+        - IndexName: schedule-index
+          KeySchema:
+            - AttributeName: listPk
+              KeyType: HASH
+            - AttributeName: startDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # The "returns tomorrow" query.
+        - IndexName: end-date-index
+          KeySchema:
+            - AttributeName: listPk
+              KeyType: HASH
+            - AttributeName: endDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # Unpaid rentals past their due date, oldest first.
+        - IndexName: payment-index
+          KeySchema:
+            - AttributeName: paymentStatus
+              KeyType: HASH
+            - AttributeName: paymentDueDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
   RateLimitsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -265,28 +347,6 @@ Resources:
       CodeUri: ../dist/
       Handler: index.handler
       Description: HTTP API for the JGS rental console and public form.
-      Environment:
-        Variables:
-          NODE_ENV: production
-          LOG_LEVEL: info
-          # The bundle is minified, so without this a CloudWatch stack trace
-          # points at column 41000 of one line and tells you nothing.
-          NODE_OPTIONS: --enable-source-maps
-          TABLE_USERS: !Ref UsersTable
-          TABLE_APPLICATIONS: !Ref ApplicationsTable
-          TABLE_VEHICLES: !Ref VehiclesTable
-          TABLE_NOTIFICATIONS: !Ref NotificationsTable
-          TABLE_RATE_LIMITS: !Ref RateLimitsTable
-          DOCUMENTS_BUCKET: !Ref DocumentsBucket
-          CORS_ORIGINS: !Ref CorsOrigins
-          CONSOLE_BASE_URL: !Ref ConsoleBaseUrl
-          ACCESS_TOKEN_TTL_HOURS: "8"
-          # Secrets are read from SSM at cold start, not injected here: the
-          # operator creates the Telegram bot after this stack exists, and
-          # rotating a parameter must not require a redeploy.
-          JWT_SECRET_PARAM: !Sub "/${NamePrefix}/prod/jwt-secret"
-          TELEGRAM_BOT_TOKEN_PARAM: !Sub "/${NamePrefix}/prod/telegram-bot-token"
-          TELEGRAM_CHAT_ID_PARAM: !Sub "/${NamePrefix}/prod/telegram-chat-id"
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -309,6 +369,8 @@ Resources:
                 - !GetAtt NotificationsTable.Arn
                 - !Sub "${NotificationsTable.Arn}/index/*"
                 - !GetAtt RateLimitsTable.Arn
+                - !GetAtt RentalsTable.Arn
+                - !Sub "${RentalsTable.Arn}/index/*"
             - Effect: Allow
               Action:
                 - s3:PutObject
@@ -343,6 +405,59 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${NamePrefix}-api"
       RetentionInDays: !Ref LogRetentionDays
 
+  ReminderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${NamePrefix}-rental-reminders"
+      CodeUri: ../dist/
+      Handler: scheduler.handler
+      Description: Daily Telegram digest of tomorrow's pick-ups and returns, and overdue payments.
+      # Every rental in the digest is stamped one at a time before the message
+      # goes out, so a busy day is a few dozen sequential writes.
+      Timeout: 60
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt RentalsTable.Arn
+                - !Sub "${RentalsTable.Arn}/index/*"
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${NamePrefix}/prod/*"
+            - Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+      Events:
+        # 08:00 Jakarta every day: early enough to prepare a car for a morning
+        # pick-up the next day, late enough that someone is awake to read it.
+        # The job is idempotent per calendar day (see
+        # `usecases/rentals/send-rental-reminders.ts`), so a retry is safe.
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub "${NamePrefix}-rental-reminders-daily"
+            Description: Daily rental reminders for the Telegram operations group.
+            ScheduleExpression: cron(0 8 * * ? *)
+            ScheduleExpressionTimezone: Asia/Jakarta
+            RetryPolicy:
+              MaximumRetryAttempts: 2
+              MaximumEventAgeInSeconds: 3600
+
+  ReminderFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NamePrefix}-rental-reminders"
+      RetentionInDays: !Ref LogRetentionDays
+
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -375,3 +490,6 @@ Outputs:
 
   FunctionName:
     Value: !Ref ApiFunction
+
+  ReminderFunctionName:
+    Value: !Ref ReminderFunction

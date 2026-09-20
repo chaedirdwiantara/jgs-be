@@ -5,6 +5,7 @@ import {
   SOCIAL_PLATFORMS,
 } from "../domain/application/rental-application.js";
 import { APPLICATION_STATUSES } from "../domain/application/rental-application.js";
+import { MAX_DURATION_DAYS, PAYMENT_STATUSES } from "../domain/rental/rental.js";
 import { USER_ROLES } from "../domain/user/user.js";
 import { VEHICLE_TIERS } from "../domain/vehicle/vehicle.js";
 
@@ -83,14 +84,23 @@ export const uploadTicketSchema = z.object({
 });
 
 /** `YYYY-MM-DD`, and a date that actually exists (not 2026-02-31). */
-const calendarDate = z
-  .string()
-  .trim()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Tanggal penyewaan wajib diisi")
-  .refine((value) => {
-    const parsed = new Date(`${value}T00:00:00Z`);
-    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(value);
-  }, "Tanggal penyewaan tidak valid");
+const calendarDateFor = (label: string) =>
+  z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, `${label} wajib diisi`)
+    .refine((value) => {
+      const parsed = new Date(`${value}T00:00:00Z`);
+      return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(value);
+    }, `${label} tidak valid`);
+
+const calendarDate = calendarDateFor("Tanggal penyewaan");
+
+const clockTime = (label: string) =>
+  z
+    .string()
+    .trim()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, `${label} wajib diisi`);
 
 /**
  * `partialRecord`, not `record`.
@@ -129,15 +139,12 @@ export const submitApplicationSchema = z
     purpose: text("Tujuan menyewa mobil", 2, 300),
     usageLocation: text("Lokasi penggunaan mobil", 2, 300),
     startDate: calendarDate,
-    startTime: z
-      .string()
-      .trim()
-      .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Jam mulai sewa wajib diisi"),
+    startTime: clockTime("Jam mulai sewa"),
     durationDays: z.coerce
       .number({ error: "Durasi penyewaan wajib diisi" })
       .int("Durasi penyewaan harus berupa angka bulat")
       .min(1, "Durasi penyewaan minimal 1 hari")
-      .max(90, "Durasi penyewaan maksimal 90 hari"),
+      .max(MAX_DURATION_DAYS, `Durasi penyewaan maksimal ${MAX_DURATION_DAYS} hari`),
 
     vehicleChoice: text("Jenis mobil", 1, 60),
     vehicleLabel: text("Nama unit", 1, 80),
@@ -237,4 +244,39 @@ export const vehicleSchema = z.object({
     outdoor: z.object({ wide: photoPath, tall: photoPath }),
     studio: z.object({ wide: photoPath, tall: photoPath }),
   }),
+});
+
+/**
+ * A rental schedule entry. Mirrors `rentalFormSchema` in the console.
+ *
+ * The plate is uppercased and stripped of spaces so `b 1234 xyz`, `B1234XYZ`
+ * and `B 1234 XYZ` are one unit when the schedule is scanned by eye.
+ */
+export const rentalSchema = z.object({
+  customerName: text("Nama penyewa", 2, 120),
+  customerPhone: phone("Nomor WhatsApp penyewa"),
+  vehicleId: text("Unit", 1, 60),
+  vehicleLabel: text("Nama unit", 1, 80),
+  plateNumber: z
+    .string()
+    .trim()
+    .max(20, "Nomor polisi maksimal 20 karakter")
+    .transform((value) => value.replace(/\s+/g, "").toUpperCase())
+    .default(""),
+  startDate: calendarDateFor("Tanggal mulai sewa"),
+  startTime: clockTime("Jam ambil"),
+  durationDays: z
+    .number({ error: "Durasi sewa wajib diisi" })
+    .int("Durasi sewa harus berupa angka bulat")
+    .min(1, "Durasi sewa minimal 1 hari")
+    .max(MAX_DURATION_DAYS, `Durasi sewa maksimal ${MAX_DURATION_DAYS} hari`),
+  dailyRate: rupiah("Harga per hari", 100_000_000),
+  paymentStatus: z.enum(PAYMENT_STATUSES, { error: "Pilih status pembayaran" }),
+  paymentDueDate: calendarDateFor("Tanggal jatuh tempo"),
+  notes: z.string().trim().max(2000, "Catatan maksimal 2000 karakter").default(""),
+});
+
+export const listRentalsSchema = z.object({
+  from: calendarDateFor("Tanggal awal"),
+  to: calendarDateFor("Tanggal akhir"),
 });
