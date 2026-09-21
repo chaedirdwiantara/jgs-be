@@ -24,6 +24,7 @@ export const TABLES = {
   applications: env.TABLE_APPLICATIONS,
   vehicles: env.TABLE_VEHICLES,
   notifications: env.TABLE_NOTIFICATIONS,
+  rentals: env.TABLE_RENTALS,
   rateLimits: env.TABLE_RATE_LIMITS,
 } as const;
 

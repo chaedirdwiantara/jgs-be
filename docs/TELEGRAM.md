@@ -1,8 +1,15 @@
 # Notifikasi Telegram — panduan setup
 
-Setiap formulir penyewa yang masuk dikirim sebagai satu pesan ke grup Telegram
-Anda. Ikuti langkah di bawah **sekali saja**; setelah itu tidak perlu deploy
-ulang apa pun.
+Ada dua grup, satu bot:
+
+| Grup | Parameter SSM | Isinya |
+|---|---|---|
+| Formulir masuk | `/jgs/prod/telegram-chat-id` | Satu pesan per formulir penyewa yang masuk dari situs |
+| Jadwal rental | `/jgs/prod/telegram-rental-chat-id` | Jadwal baru, pembayaran diterima, pengingat H-1 keluar/kembali, pembayaran lewat jatuh tempo |
+
+Bagian 1–5 memasang bot dan grup formulir. Bagian **6** memasang grup jadwal
+rental — kalau bot sudah ada, langsung ke sana. Ikuti langkah di bawah **sekali
+saja**; setelah itu tidak perlu deploy ulang apa pun.
 
 Anda butuh: aplikasi Telegram, dan akses AWS CLI ke akun `121205961560`
 (region `ap-southeast-1`).
@@ -147,3 +154,88 @@ aws logs tail /aws/lambda/jgs-api --since 15m --region ap-southeast-1 \
 
 Ulangi langkah 2–4 dengan grup baru. Tidak perlu membuat bot baru, dan tidak
 perlu deploy ulang.
+
+---
+
+## 6. Grup kedua: jadwal rental
+
+Bot yang sama mengirim ke grup yang berbeda — yang membedakan hanya chat id.
+Grup ini untuk petugas yang menyiapkan mobil dan menagih pembayaran, jadi
+isinya sengaja dipisah dari grup formulir.
+
+1. Di Telegram: **New Group** → beri nama, misalnya `JGS — Jadwal Rental`.
+   Masukkan petugas yang perlu tahu, lalu tambahkan bot `@jgs_notifikasi_bot`
+   ke grup itu (privacy mode sudah dimatikan di langkah 2, jadi tidak perlu
+   diulang).
+2. **Kirim satu pesan apa saja** di grup baru itu, lalu jalankan dari folder
+   repo ini:
+
+   ```bash
+   TELEGRAM_BOT_TOKEN=<token-bot> npm run telegram:chat-id
+   ```
+
+   Grup baru muncul di daftar bersama grup lama. Salin id grup **jadwal**
+   (angka negatif).
+3. Simpan ke parameter yang **berbeda** dari grup formulir:
+
+   ```bash
+   aws ssm put-parameter \
+     --name /jgs/prod/telegram-rental-chat-id \
+     --value "<chat-id-grup-jadwal>" \
+     --type String --overwrite \
+     --region ap-southeast-1
+   ```
+
+4. Paksa Lambda membaca ulang parameternya (nilai di-cache per container):
+
+   ```bash
+   aws lambda update-function-configuration --function-name jgs-api \
+     --description "rental telegram $(date +%F)" --region ap-southeast-1
+   aws lambda update-function-configuration --function-name jgs-rental-reminders \
+     --description "rental telegram $(date +%F)" --region ap-southeast-1
+   ```
+
+5. Uji: buka konsol admin → **Jadwal Rental** → **Tambah jadwal**, isi data
+   percobaan, simpan. Grup jadwal menerima `🆕 Jadwal Rental Baru` dalam
+   beberapa detik. Ubah statusnya menjadi *Sudah Dibayar* → grup menerima
+   `✅ Pembayaran Diterima`. Hapus data percobaan itu setelah selesai.
+
+### Apa yang dikirim, dan kapan
+
+| Pesan | Pemicu |
+|---|---|
+| `🆕 Jadwal Rental Baru` | Saat jadwal disimpan di konsol, apa pun status bayarnya |
+| `✅ Pembayaran Diterima` | Saat status jadwal berubah dari *Belum* ke *Sudah Dibayar* |
+| `🚗 Besok N unit keluar` | Setiap hari **08:00 WIB**, berisi semua jadwal yang mulai besok (H-1) |
+| `🔁 Besok N unit kembali` | Setiap hari 08:00 WIB, berisi semua jadwal yang hari terakhirnya besok (H-1) |
+| `⚠️ N pembayaran lewat jatuh tempo` | Setiap hari 08:00 WIB, selama masih ada jadwal *Belum Dibayar* yang tanggal jatuh temponya sudah lewat. Berhenti sendiri begitu ditandai lunas |
+
+Tiga pesan harian dikirim oleh fungsi `jgs-rental-reminders` (jadwal
+EventBridge `jgs-rental-reminders-daily`). Kalau hari itu tidak ada apa-apa,
+tidak ada pesan. Setiap jadwal mencatat tanggal pengingatnya terkirim, jadi
+menjalankan fungsi dua kali di hari yang sama tidak mengirim ulang:
+
+```bash
+# Menjalankan digest hari ini secara manual (aman diulang)
+aws lambda invoke --function-name jgs-rental-reminders \
+  --region ap-southeast-1 /dev/stdout
+```
+
+Jadwal yang dibuat **setelah** pukul 08:00 untuk esok hari tidak mendapat
+pengingat H-1 lagi — pesan `🆕 Jadwal Rental Baru` yang baru saja terkirim
+sudah menyebut tanggalnya.
+
+### Kalau pesan jadwal tidak datang
+
+Cara periksanya sama seperti tabel di atas, dengan log fungsi yang sesuai:
+
+```bash
+aws logs tail /aws/lambda/jgs-api --since 15m --region ap-southeast-1 \
+  --filter-pattern telegram
+aws logs tail /aws/lambda/jgs-rental-reminders --since 1d --region ap-southeast-1
+```
+
+Baris `telegram_not_configured` dengan `"audience":"rentals"` berarti
+parameter `/jgs/prod/telegram-rental-chat-id` masih `unset` — ulangi langkah
+6.3 dan 6.4. Baris `rental_reminders_sent` menunjukkan berapa jadwal yang
+masuk tiap digest (`pickups`, `returns`, `overdue`).

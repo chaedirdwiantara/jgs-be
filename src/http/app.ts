@@ -10,6 +10,7 @@ import { errorResponse, type AppEnv } from "./middleware.js";
 import { applicationRoutes } from "./routes/applications.js";
 import { authRoutes } from "./routes/auth.js";
 import { notificationRoutes } from "./routes/notifications.js";
+import { rentalRoutes } from "./routes/rentals.js";
 import { userRoutes } from "./routes/users.js";
 import { vehicleRoutes } from "./routes/vehicles.js";
 
@@ -48,6 +49,7 @@ export function createApp() {
   app.route("/users", userRoutes);
   app.route("/vehicles", vehicleRoutes);
   app.route("/notifications", notificationRoutes);
+  app.route("/rentals", rentalRoutes);
   // Owns two prefixes (`/uploads` and `/applications`) because they are one
   // feature: a form upload only exists to be attached to a submission.
   app.route("/", applicationRoutes);

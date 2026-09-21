@@ -13,18 +13,19 @@ Operational how-to for the JGS rental API. Architecture rationale is in the
 
 | Resource | Name | Deletion policy |
 |---|---|---|
-| DynamoDB | `jgs-users`, `jgs-applications`, `jgs-vehicles`, `jgs-notifications` | **Retain** |
+| DynamoDB | `jgs-users`, `jgs-applications`, `jgs-vehicles`, `jgs-notifications`, `jgs-rentals` | **Retain** |
 | DynamoDB | `jgs-rate-limits` | Delete (disposable counters) |
 | S3 | `jgs-documents-121205961560` | **Retain** |
 | Lambda | `jgs-api` (Node 22, arm64, 512 MB) | Delete |
+| Lambda | `jgs-rental-reminders` — daily Telegram digest, EventBridge schedule `jgs-rental-reminders-daily` at 08:00 WIB | Delete |
 | API Gateway | HTTP API, `$default` stage | Delete |
-| Logs | `/aws/lambda/jgs-api`, `/aws/apigateway/jgs-api`, 30-day retention | Delete |
+| Logs | `/aws/lambda/jgs-api`, `/aws/lambda/jgs-rental-reminders`, `/aws/apigateway/jgs-api`, 30-day retention | Delete |
 
-The four tables holding real data and the document bucket are `Retain`: deleting
+The five tables holding real data and the document bucket are `Retain`: deleting
 the stack must never take a renter's identity documents with it.
 
-Point-in-time recovery is on for `jgs-users`, `jgs-applications` and
-`jgs-vehicles`.
+Point-in-time recovery is on for `jgs-users`, `jgs-applications`,
+`jgs-vehicles` and `jgs-rentals`.
 
 ---
 
@@ -34,10 +35,12 @@ Point-in-time recovery is on for `jgs-users`, `jgs-applications` and
 ./scripts/bootstrap.sh
 ```
 
-Creates the artifact bucket and three SSM parameters — `/jgs/prod/jwt-secret`
-(random, SecureString), `/jgs/prod/telegram-bot-token` and
-`/jgs/prod/telegram-chat-id` (both placeholders). Re-running never overwrites an
-existing secret.
+Creates the artifact bucket and four SSM parameters — `/jgs/prod/jwt-secret`
+(random, SecureString), `/jgs/prod/telegram-bot-token`,
+`/jgs/prod/telegram-chat-id` and `/jgs/prod/telegram-rental-chat-id` (all three
+placeholders; see [TELEGRAM.md](TELEGRAM.md)). Re-running never overwrites an
+existing secret, and adds any parameter that is missing — so run it again after
+pulling a change that introduces one.
 
 CloudFormation cannot create SecureString parameters, which is why these live
 outside the template.
